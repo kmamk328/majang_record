@@ -1,0 +1,1 @@
+# majang_record
