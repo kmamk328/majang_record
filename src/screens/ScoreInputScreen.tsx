@@ -1,23 +1,31 @@
 import React, { useState, useEffect, useLayoutEffect } from 'react';
-import { View, Text, TextInput, Button, StyleSheet, Switch } from 'react-native';
+import { View, Text, TextInput, Button, StyleSheet, Switch, TouchableOpacity, Modal, ScrollView } from 'react-native';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { db } from '../../firebaseConfig';
-import { getFirestore, collection, addDoc, doc, updateDoc, getDoc } from 'firebase/firestore';
+import { getFirestore, collection, addDoc, doc, updateDoc, getDoc, setDoc, getDocs, query, orderBy } from 'firebase/firestore';
 import { Picker } from '@react-native-picker/picker';
+import { Ionicons } from '@expo/vector-icons';
 
 const ScoreInputScreen = () => {
-  
   const [currentRound, setCurrentRound] = useState({
     discarder: '',
     discarderPoints: '',
     isNaki: false,
     isReach: false,
-    roundNumber: '',
+    roundNumber: { round: '1', place: '東', honba: '1' },
     winner: '',
     winnerPoints: '',
-    isTsumo: false
+    isTsumo: false,
+    roles: []
   });
   const [members, setMembers] = useState([]);
+  const [rolesOptions, setRolesOptions] = useState([]);
+  const [availablePoints, setAvailablePoints] = useState([]);
+  const [filteredPoints, setFilteredPoints] = useState([]);
+  const [modalVisible, setModalVisible] = useState(false);
+  const [selectedRoles, setSelectedRoles] = useState([]);
+  const [currentRoundIndex, setCurrentRoundIndex] = useState(0);
+  const [rounds, setRounds] = useState([]);
   const navigation = useNavigation();
   const route = useRoute();
   const { gameId } = route.params;
@@ -31,10 +39,10 @@ const ScoreInputScreen = () => {
   useLayoutEffect(() => {
     navigation.setOptions({
       headerStyle: {
-        backgroundColor: '#E0F8E0', // 薄い緑色
+        backgroundColor: '#E0F8E0',
       },
-      headerTintColor: '#000', // 必要に応じてテキストの色を変更
-      headerTitle: 'スコア入力', // ヘッダータイトル
+      headerTintColor: '#000',
+      headerTitle: 'スコア入力',
     });
   }, [navigation]);
 
@@ -50,35 +58,108 @@ const ScoreInputScreen = () => {
       setMembers(memberNames);
     };
 
+    const fetchRounds = async () => {
+      const roundsRef = collection(db, 'games', gameId, 'rounds');
+      const roundsQuery = query(roundsRef, orderBy('roundNumber'));
+      const roundsSnapshot = await getDocs(roundsQuery);
+      const roundsData = roundsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setRounds(roundsData);
+      if (roundsData.length > 0) {
+        setCurrentRound(roundsData[0]);
+        setCurrentRoundIndex(0);
+      }
+    };
+
+    const fetchRolesOptions = () => {
+      try {
+        const rolesData = require('../../roles.txt').default;
+        const rolesArray = rolesData.split('\n').map(line => {
+          const [role, points] = line.split(',');
+          return { role, points: parseInt(points, 10) };
+        });
+        setRolesOptions(rolesArray);
+      } catch (error) {
+        console.error('Error reading roles.txt file:', error);
+      }
+    };
+
+    const fetchAvailablePoints = () => {
+      try {
+        const pointsData = require('../../points.txt').default;
+        const pointsArray = pointsData.split('\n').map(point => parseInt(point, 10));
+        setAvailablePoints(pointsArray);
+        setFilteredPoints(pointsArray);
+      } catch (error) {
+        console.error('Error reading points.txt file:', error);
+      }
+    };
+
     fetchMembers();
+    fetchRounds();
+    fetchRolesOptions();
+    fetchAvailablePoints();
   }, [gameId]);
 
   const handleChange = (key, value) => {
     setCurrentRound({ ...currentRound, [key]: value });
   };
 
+  const handleRoundNumberChange = (key, value) => {
+    setCurrentRound({ 
+      ...currentRound, 
+      roundNumber: {
+        ...currentRound.roundNumber,
+        [key]: value
+      }
+    });
+  };
+
+  const toggleRoleSelection = (role) => {
+    const updatedRoles = selectedRoles.includes(role)
+      ? selectedRoles.filter(r => r !== role)
+      : [...selectedRoles, role];
+    setSelectedRoles(updatedRoles);
+    updateFilteredPoints(updatedRoles);
+  };
+
+  const updateFilteredPoints = (updatedRoles) => {
+    const totalPoints = updatedRoles.reduce((sum, role) => {
+      const roleObj = rolesOptions.find(r => r.role === role);
+      return sum + (roleObj ? roleObj.points : 0);
+    }, 0);
+
+    let newFilteredPoints = availablePoints;
+    if (totalPoints >= 2) {
+      newFilteredPoints = newFilteredPoints.filter(point => point >= 2000);
+    }
+    if (totalPoints >= 4) {
+      newFilteredPoints = newFilteredPoints.filter(point => point >= 8000);
+    }
+
+    setFilteredPoints(newFilteredPoints);
+  };
+
   const handleNext = async () => {
     const roundsRef = collection(db, 'games', gameId, 'rounds');
-    // await addDoc(roundsRef, currentRound);
     await addDoc(roundsRef, {
       ...currentRound,
       isTsumo: isTsumo,
       isNaki: isNaki,
       isReach: isReach,
       discarder: discarder,
-      discarderPoints: discarderPoints
-      });
+      discarderPoints: discarderPoints,
+      roles: selectedRoles // 役を保存
+    });
 
-    // メンバーのスコアを更新
     const winnerRef = doc(db, 'members', currentRound.winner);
-    const discarderRef = doc(db, 'members', currentRound.discarder);
+    const discarderRef = doc(db, 'members', discarder);
 
     await updateDoc(winnerRef, {
       totalPoints: (await getDoc(winnerRef)).data().totalPoints + parseInt(currentRound.winnerPoints, 10)
     });
 
     await updateDoc(discarderRef, {
-      totalPoints: (await getDoc(discarderRef)).data().totalPoints - parseInt(currentRound.discarderPoints, 10)
+      totalPoints: (await getDoc(discarderRef)).data().totalPoints - parseInt(discarderPoints, 10)
     });
 
     setCurrentRound({
@@ -86,22 +167,19 @@ const ScoreInputScreen = () => {
       discarderPoints: '',
       isNaki: false,
       isReach: false,
-      roundNumber: '',
+      roundNumber: { round: '1', place: '東', honba: '1' },
       winner: '',
       winnerPoints: '',
-      isTsumo: false
+      isTsumo: false,
+      roles: []
     });
     setIsTsumo(false);
     setIsNaki(false);
     setIsReach(false);
     setDiscarder('');
     setDiscarderPoints('');
-    // try {
-    //   await setDoc(doc(firestore, "games", "currentGame", "rounds", "currentRound"), currentRound);
-    //   console.log("Round data saved successfully!");
-    // } catch (error) {
-    //   console.error("Error saving round data: ", error);
-    // }
+    setSelectedRoles([]);
+
     try {
       await setDoc(doc(firestore, "games", gameId, "rounds", "currentRound"), {
         ...currentRound,
@@ -109,11 +187,22 @@ const ScoreInputScreen = () => {
         isNaki: isNaki,
         isReach: isReach,
         discarder: discarder,
-        discarderPoints: discarderPoints
+        discarderPoints: discarderPoints,
+        roles: selectedRoles // 役を保存
       });
       console.log("Round data saved successfully!");
     } catch (error) {
       console.error("Error saving round data: ", error);
+    }
+
+    navigation.push('ScoreInput', { gameId });
+  };
+
+  const handlePrevious = () => {
+    if (currentRoundIndex > 0) {
+      const newIndex = currentRoundIndex - 1;
+      setCurrentRound(rounds[newIndex]);
+      setCurrentRoundIndex(newIndex);
     }
   };
 
@@ -121,22 +210,43 @@ const ScoreInputScreen = () => {
     navigation.navigate('Result', { gameId });
   };
 
+  const confirmRolesSelection = () => {
+    setCurrentRound({ ...currentRound, roles: selectedRoles });
+    setModalVisible(false);
+  };
+
   return (
     <View style={styles.container}>
       <Text>局ごとの成績を入力してください:</Text>
-      <TextInput
-        style={styles.input}
-        placeholder="局番号"
-        value={currentRound.roundNumber}
-        onChangeText={(text) => handleChange('roundNumber', text)}
-      />
-      {/* <View style={styles.toggleContainer}>
-        <Text>ツモ:</Text>
-        <Switch
-          value={currentRound.isTsumo}
-          onValueChange={(value) => handleChange('isTsumo', value)}
-        />
-      </View> */}
+      <View style={styles.roundNumberContainer}>
+        <Picker
+          selectedValue={currentRound.roundNumber.place}
+          style={styles.picker}
+          onValueChange={(itemValue) => handleRoundNumberChange('place', itemValue)}
+        >
+          {['東', '南', '西', '北'].map((place) => (
+            <Picker.Item key={place} label={place} value={place} />
+          ))}
+        </Picker>
+        <Picker
+          selectedValue={currentRound.roundNumber.round}
+          style={styles.picker}
+          onValueChange={(itemValue) => handleRoundNumberChange('round', itemValue)}
+        >
+          {[1, 2, 3, 4].map((round) => (
+            <Picker.Item key={round} label={round.toString()} value={round.toString()} />
+          ))}
+        </Picker>
+        <Picker
+          selectedValue={currentRound.roundNumber.honba}
+          style={styles.picker}
+          onValueChange={(itemValue) => handleRoundNumberChange('honba', itemValue)}
+        >
+          {Array.from({ length: 20 }, (_, i) => i + 1).map((honba) => (
+            <Picker.Item key={honba} label={honba.toString()} value={honba.toString()} />
+          ))}
+        </Picker>
+      </View>
       <Text>あがった人:</Text>
         <Picker
           selectedValue={currentRound.winner}
@@ -148,7 +258,7 @@ const ScoreInputScreen = () => {
           ))}
         </Picker>
       <View style={styles.toggleContainer}>
-      <Text>ツモ:</Text>
+        <Text>ツモ:</Text>
         <Switch
           value={isTsumo}
           onValueChange={(value) => setIsTsumo(value)}
@@ -168,12 +278,53 @@ const ScoreInputScreen = () => {
           onValueChange={(value) => setIsReach(value)}
         />
       </View>
-      <TextInput
-        style={styles.input}
-        placeholder="あがり点"
-        value={currentRound.winnerPoints}
-        onChangeText={(text) => handleChange('winnerPoints', text)}
-      />
+      <Text>あがり点:</Text>
+      <Picker
+        selectedValue={currentRound.winnerPoints}
+        style={styles.picker}
+        onValueChange={(itemValue) => handleChange('winnerPoints', itemValue)}
+      >
+        {filteredPoints.map((point, index) => (
+          <Picker.Item key={index} label={point.toString()} value={point.toString()} />
+        ))}
+      </Picker>
+      <Text>あがった役:</Text>
+      <View style={styles.tagsContainer}>
+        {selectedRoles.map((role, index) => (
+          <TouchableOpacity
+            key={index}
+            style={styles.tag}
+          >
+            <Text style={styles.tagText}>{role}</Text>
+          </TouchableOpacity>
+        ))}
+        <Button title="あがった役を選択" onPress={() => setModalVisible(true)} />
+      </View>
+      <Modal
+        animationType="slide"
+        transparent={true}
+        visible={modalVisible}
+        onRequestClose={() => setModalVisible(false)}
+      >
+        <View style={styles.modalView}>
+          <Text style={styles.modalTitle}>あがった役を選択</Text>
+          <ScrollView>
+            {rolesOptions.map((roleObj, index) => (
+              <TouchableOpacity
+                key={index}
+                style={[
+                  styles.tag,
+                  selectedRoles.includes(roleObj.role) && styles.tagSelected
+                ]}
+                onPress={() => toggleRoleSelection(roleObj.role)}
+              >
+                <Text style={styles.tagText}>{roleObj.role} ({roleObj.points}点)</Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+          <Button title="OK" onPress={confirmRolesSelection} />
+        </View>
+      </Modal>
       {!isTsumo && (
         <>
           <Text>放銃した人:</Text>
@@ -190,6 +341,7 @@ const ScoreInputScreen = () => {
         </>
       )}
       <View style={styles.buttonContainer}>
+        <Button title="前へ" onPress={handlePrevious} />
         <Button title="次へ" onPress={handleNext} />
         <Button title="終了" onPress={handleFinish} />
       </View>
@@ -200,9 +352,16 @@ const ScoreInputScreen = () => {
 const styles = StyleSheet.create({
   container: { flex: 1, justifyContent: 'center', padding: 20 },
   input: { height: 40, borderColor: 'gray', borderWidth: 1, marginBottom: 10, paddingLeft: 10 },
-  picker: { height: 50, width: 200 },
+  picker: { height: 50, width: 100 },
+  roundNumberContainer: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
   buttonContainer: { flexDirection: 'row', justifyContent: 'space-between' },
-  toggleContainer: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }
+  toggleContainer: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
+  tagsContainer: { flexDirection: 'row', flexWrap: 'wrap', marginVertical: 10 },
+  tag: { padding: 10, margin: 5, borderRadius: 5, borderWidth: 1, borderColor: 'gray' },
+  tagSelected: { backgroundColor: 'lightgreen' },
+  tagText: { fontSize: 16 },
+  modalView: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: 'white', padding: 20, margin: 20, borderRadius: 10, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.25, shadowRadius: 4, elevation: 5 },
+  modalTitle: { fontSize: 20, marginBottom: 20 }
 });
 
 export default ScoreInputScreen;
